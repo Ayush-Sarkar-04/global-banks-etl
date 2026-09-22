@@ -91,10 +91,23 @@ def transform(df, csv_path):
 def load_to_csv(df, output_path):
     df.to_csv(output_path, index=False)
 def load_to_db(df, sql_connection, table_name):
+    snapshot_date = datetime.now().strftime("%Y-%m-%d")
+    df["Snapshot_Date"] = snapshot_date
+    table_exists = pd.read_sql(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        f"AND name='{table_name}'",
+        sql_connection
+    )
+    if not table_exists.empty:
+        sql_connection.execute(
+            f"DELETE FROM {table_name} "
+            "WHERE Snapshot_Date = ?",
+            (snapshot_date,)
+        )
     df.to_sql(
         table_name,
         sql_connection,
-        if_exists="replace",
+        if_exists="append" if not table_exists.empty else "replace",
         index=False
     )
 def run_query(query_statement, sql_connection):
