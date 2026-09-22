@@ -7,7 +7,8 @@ from etl_pipeline import (
     extract,
     validate_data,
     transform,
-    load_to_db
+    load_to_db,
+    historical_comparison
 )
 
 
@@ -25,8 +26,7 @@ def valid_dataframe():
 
 
 def test_valid_data_passes():
-    df = valid_dataframe()
-    validate_data(df)
+    validate_data(valid_dataframe())
 
 
 def test_wrong_record_count_fails():
@@ -158,9 +158,11 @@ def test_snapshot_is_created(tmp_path):
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(db_path)
 
-    df = valid_dataframe()
-
-    load_to_db(df, conn, "Largest_banks")
+    load_to_db(
+        valid_dataframe(),
+        conn,
+        "Largest_banks"
+    )
 
     result = pd.read_sql(
         "SELECT * FROM Largest_banks",
@@ -189,5 +191,110 @@ def test_same_day_snapshot_is_not_duplicated(tmp_path):
     )
 
     assert len(result) == 10
+
+    conn.close()
+
+
+def test_historical_comparison_requires_two_snapshots(tmp_path):
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+
+    df = valid_dataframe()
+    df["Snapshot_Date"] = "2026-09-22"
+
+    df.to_sql(
+        "Largest_banks",
+        conn,
+        index=False
+    )
+
+    result = historical_comparison(
+        conn,
+        "Largest_banks"
+    )
+
+    assert result.empty
+
+    conn.close()
+
+
+def test_historical_comparison_returns_two_snapshot_data(tmp_path):
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+
+    previous = valid_dataframe()
+    previous["Snapshot_Date"] = "2026-09-22"
+
+    current = valid_dataframe()
+    current["Snapshot_Date"] = "2026-09-23"
+
+    combined = pd.concat(
+        [previous, current],
+        ignore_index=True
+    )
+
+    combined.to_sql(
+        "Largest_banks",
+        conn,
+        index=False
+    )
+
+    result = historical_comparison(
+        conn,
+        "Largest_banks"
+    )
+
+    assert len(result) == 10
+    assert "Previous_Rank" in result.columns
+    assert "Current_Rank" in result.columns
+    assert "Rank_Change" in result.columns
+    assert "Previous_MC" in result.columns
+    assert "Current_MC" in result.columns
+    assert "MC_Change_Percent" in result.columns
+
+    conn.close()
+
+
+def test_historical_comparison_calculates_changes(tmp_path):
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+
+    previous = valid_dataframe()
+    previous["Snapshot_Date"] = "2026-09-22"
+
+    current = valid_dataframe()
+    current["Snapshot_Date"] = "2026-09-23"
+
+    current.loc[0, "MC_USD_Billion"] = 80
+    current.loc[1, "MC_USD_Billion"] = 110
+
+    combined = pd.concat(
+        [previous, current],
+        ignore_index=True
+    )
+
+    combined.to_sql(
+        "Largest_banks",
+        conn,
+        index=False
+    )
+
+    result = historical_comparison(
+        conn,
+        "Largest_banks"
+    )
+
+    bank_a = result[result["Name"] == "Bank A"].iloc[0]
+    bank_b = result[result["Name"] == "Bank B"].iloc[0]
+
+    assert bank_a["Previous_Rank"] == 1
+    assert bank_a["Current_Rank"] == 2
+    assert bank_a["Rank_Change"] == -1
+    assert bank_a["MC_Change_Percent"] == -20.0
+
+    assert bank_b["Previous_Rank"] == 2
+    assert bank_b["Current_Rank"] == 1
+    assert bank_b["Rank_Change"] == 1
+    assert bank_b["MC_Change_Percent"] == 22.22
 
     conn.close()

@@ -51,9 +51,7 @@ def validate_data(df):
     if not all(column in df.columns for column in required_columns):
         raise ValueError("Required columns are missing")
     if len(df) != 10:
-        raise ValueError(
-            f"Expected 10 banks, found {len(df)}"
-        )
+        raise ValueError(f"Expected 10 banks, found {len(df)}")
     if df["Name"].isna().any() or (df["Name"].str.strip() == "").any():
         raise ValueError("Bank names cannot be empty")
     if df["Name"].duplicated().any():
@@ -112,20 +110,66 @@ def load_to_db(df, sql_connection, table_name):
     )
 def run_query(query_statement, sql_connection):
     print(f"\nQuery: {query_statement}")
-    result = pd.read_sql(
-        query_statement,
+    result = pd.read_sql(query_statement, sql_connection)
+    print(result)
+def historical_comparison(sql_connection, table_name):
+    dates = pd.read_sql(
+        f"""
+        SELECT DISTINCT Snapshot_Date
+        FROM {table_name}
+        ORDER BY Snapshot_Date DESC
+        LIMIT 2
+        """,
         sql_connection
     )
-    print(result)
+    if len(dates) < 2:
+        print("\nHistorical comparison requires at least two snapshots.")
+        return pd.DataFrame()
+    latest = dates.iloc[0]["Snapshot_Date"]
+    previous = dates.iloc[1]["Snapshot_Date"]
+    query = f"""
+        WITH ranked AS (
+            SELECT
+                Snapshot_Date,
+                Name,
+                MC_USD_Billion,
+                RANK() OVER (
+                    PARTITION BY Snapshot_Date
+                    ORDER BY MC_USD_Billion DESC
+                ) AS Rank
+            FROM {table_name}
+            WHERE Snapshot_Date IN (?, ?)
+        )
+        SELECT
+            previous.Name,
+            previous.Rank AS Previous_Rank,
+            current.Rank AS Current_Rank,
+            previous.Rank - current.Rank AS Rank_Change,
+            previous.MC_USD_Billion AS Previous_MC,
+            current.MC_USD_Billion AS Current_MC,
+            ROUND(
+                (current.MC_USD_Billion - previous.MC_USD_Billion)
+                * 100.0 / previous.MC_USD_Billion,
+                2
+            ) AS MC_Change_Percent
+        FROM ranked previous
+        JOIN ranked current
+            ON previous.Name = current.Name
+        WHERE previous.Snapshot_Date = ?
+          AND current.Snapshot_Date = ?
+        ORDER BY current.Rank
+    """
+    return pd.read_sql(
+        query,
+        sql_connection,
+        params=[latest, previous, previous, latest]
+    )
 # Configuration
 url = (
     "https://web.archive.org/web/20230908091635/"
     "https://en.wikipedia.org/wiki/List_of_largest_banks"
 )
-table_attribs = [
-    "Name",
-    "MC_USD_Billion"
-]
+table_attribs = ["Name", "MC_USD_Billion"]
 output_csv = "./data/Largest_banks_data.csv"
 db_name = "Banks.db"
 table_name = "Largest_banks"
@@ -152,22 +196,63 @@ try:
         "Data loaded to Database as a table"
     )
     run_query(
-        "SELECT * FROM Largest_banks",
-        conn
-    )
-    run_query(
         """
-        SELECT AVG(MC_GBP_Billion)
+        SELECT Name, MC_USD_Billion, MC_GBP_Billion
         FROM Largest_banks
+        WHERE Snapshot_Date = (
+            SELECT MAX(Snapshot_Date)
+            FROM Largest_banks
+        )
+        ORDER BY MC_USD_Billion DESC
+        LIMIT 5
         """,
         conn
     )
     run_query(
-        "SELECT Name FROM Largest_banks LIMIT 5",
+        """
+        SELECT ROUND(AVG(MC_GBP_Billion), 2)
+        AS Avg_GBP_Market_Cap
+        FROM Largest_banks
+        WHERE Snapshot_Date = (
+            SELECT MAX(Snapshot_Date)
+            FROM Largest_banks
+        )
+        """,
         conn
     )
+    run_query(
+        """
+        SELECT Name, MC_USD_Billion
+        FROM Largest_banks
+        WHERE Snapshot_Date = (
+            SELECT MAX(Snapshot_Date)
+            FROM Largest_banks
+        )
+        AND MC_USD_Billion > (
+            SELECT AVG(MC_USD_Billion)
+            FROM Largest_banks
+            WHERE Snapshot_Date = (
+                SELECT MAX(Snapshot_Date)
+                FROM Largest_banks
+            )
+        )
+        ORDER BY MC_USD_Billion DESC
+        """,
+        conn
+    )
+    comparison = historical_comparison(
+        conn,
+        table_name
+    )
+    if not comparison.empty:
+        print("\nHistorical Comparison:")
+        print(comparison)
     conn.close()
     log_progress("Process Complete")
 except Exception as error:
-    log_progress(f"ETL process failed: {error}")
-    print(f"\nETL process failed: {error}")
+    log_progress(
+        f"ETL process failed: {error}"
+    )
+    print(
+        f"\nETL process failed: {error}"
+    )
