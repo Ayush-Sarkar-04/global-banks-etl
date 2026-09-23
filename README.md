@@ -10,26 +10,40 @@ The pipeline collects the top 10 banks from a web-based source, validates the ex
 
 The SQLite database also maintains dated snapshots, allowing the pipeline to track changes in bank rankings and market capitalization across different runs.
 
-The project focuses on building a compact and reliable ETL workflow while demonstrating practical data engineering concepts such as web extraction, validation, transformation, database loading, historical data storage, SQL analysis, logging, and automated testing.
+The project focuses on building a compact and reliable ETL workflow while demonstrating practical data engineering concepts such as web extraction, validation, data-quality monitoring, transformation, database loading, historical data storage, SQL analysis, logging, and automated testing.
 
 ## Pipeline
 
 ```text
 Web Data
+
    ↓
+
 Extract
+
    ↓
+
 Validate
+
    ↓
+
 Transform
 USD → GBP / EUR / INR
+
    ↓
+
 Load
+
  ↙     ↘
+
 CSV    SQLite
+
          ↓
+
     SQL Analysis
+
          ↓
+
 Historical Comparison
 ```
 
@@ -43,6 +57,7 @@ The pipeline extracts the top 10 banks from the source using:
 - `BeautifulSoup` for HTML parsing
 - Header-based table identification instead of relying on a fixed table position
 - Request timeouts and HTTP error handling
+- Primary and fallback source handling when extraction fails
 - Safe handling of malformed rows
 
 ### Data Validation
@@ -58,9 +73,27 @@ Validation checks include:
 - Market capitalization values are not empty
 - Market capitalization values are numeric
 - Market capitalization values are positive
-- Required exchange rates are available
+- Required exchange-rate columns are present
+- Required currencies (GBP, EUR, INR) are available
+- Exchange rates are numeric
+- Exchange rates are positive
+- Duplicate currencies are rejected
 
 Invalid data causes the pipeline to stop rather than silently producing an incorrect dataset.
+
+### Data Quality Monitoring
+
+The pipeline generates a data-quality summary before transformation.
+
+The summary includes:
+
+- Total record count
+- Missing-value count
+- Duplicate bank-name count
+- Minimum market capitalization
+- Maximum market capitalization
+
+These checks provide visibility into the quality of the extracted dataset before further processing.
 
 ### Currency Transformation
 
@@ -134,9 +167,12 @@ This allows changes in the relative position and market capitalization of each b
 
 The pipeline performs SQL analysis on the latest snapshot, including:
 
+- Current ranking of banks by USD market capitalization
 - Top 5 banks by USD market capitalization
 - Average GBP market capitalization
 - Banks with market capitalization above the current average
+- Top 5 market-cap concentration
+- Market-cap gap between the largest and smallest banks
 - Historical ranking and market-cap comparison
 
 ## Dataset
@@ -156,6 +192,7 @@ The processed dataset contains the following fields:
 
 ```text
 global-banks-etl/
+
 │
 ├── data/
 │   ├── exchange_rate.csv
@@ -165,13 +202,10 @@ global-banks-etl/
 ├── test_main.py
 ├── README.md
 ├── requirements.txt
-├── .gitignore
-│
-├── Banks.db
-└── code_log.txt
+└── .gitignore
 ```
 
-`Banks.db` and `code_log.txt` are generated during execution and are excluded from version control.
+`Banks.db` and `code_log.txt` are generated during execution and excluded from version control.
 
 ## Technologies
 
@@ -216,12 +250,13 @@ The pipeline will:
 
 1. Extract the bank data
 2. Validate the records
-3. Transform market capitalization values
-4. Save the latest dataset to CSV
-5. Store the snapshot in SQLite
-6. Execute SQL analysis
-7. Compare the latest two snapshots when historical data is available
-8. Log the process
+3. Generate a data-quality summary
+4. Transform market capitalization values
+5. Save the latest dataset to CSV
+6. Store the snapshot in SQLite
+7. Execute SQL analysis
+8. Compare the latest two snapshots when historical data is available
+9. Log the process
 
 ## Running Tests
 
@@ -238,13 +273,19 @@ The test suite covers:
 - Data validation
 - Table identification
 - HTTP error handling
+- Fallback extraction
 - Currency transformation
+- Exchange-rate validation
 - Database loading
 - Snapshot creation
 - Same-day snapshot protection
 - Historical comparison
 - Rank-change calculations
 - Market-cap change calculations
+- Data-quality monitoring
+- SQL analysis
+- Latest-snapshot isolation
+- ETL reliability and edge cases
 
 ## Logging
 
@@ -263,6 +304,7 @@ This project demonstrates:
 - Web data extraction
 - HTML table parsing
 - Data validation
+- Data-quality monitoring
 - Data transformation
 - Currency conversion
 - CSV processing
@@ -272,6 +314,7 @@ This project demonstrates:
 - Ranking analysis
 - Change tracking
 - Error handling
+- Fallback source handling
 - Process logging
 - Automated testing
 - End-to-end ETL design
