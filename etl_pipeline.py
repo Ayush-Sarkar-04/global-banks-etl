@@ -7,19 +7,18 @@ from datetime import datetime
 import sqlite3
 def log_progress(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open("code_log.txt", "a") as f:
-        f.write(f"{timestamp} : {message}\n")
+    with open("code_log.txt", "a") as f: f.write(f"{timestamp} : {message}\n")
 def extract(url, table_attribs):
-    response = requests.get(url, timeout=20)
-    response.raise_for_status()
+    try:
+        response = requests.get(url, timeout=20)
+        response.raise_for_status()
+    except requests.RequestException as error:
+        raise ConnectionError(f"Source request failed: {error}") from error
     soup = BeautifulSoup(response.text, "lxml")
     tables = soup.find_all("table", {"class": "wikitable"})
     target_table = None
     for table in tables:
-        headers = [
-            cell.get_text(" ", strip=True).lower()
-            for cell in table.find_all("th")
-        ]
+        headers = [cell.get_text(" ", strip=True).lower() for cell in table.find_all("th")]
         header_text = " ".join(headers)
         if "market cap" in header_text and "bank" in header_text:
             target_table = table
@@ -35,9 +34,7 @@ def extract(url, table_attribs):
         try:
             name = cols[1].get_text(" ", strip=True)
             market_cap = cols[2].get_text(" ", strip=True)
-            market_cap = float(
-                market_cap.replace(",", "").replace("\n", "")
-            )
+            market_cap = float(market_cap.replace(",", "").replace("\n", ""))
             data.append([name, market_cap])
         except (ValueError, IndexError):
             continue
@@ -46,45 +43,57 @@ def extract(url, table_attribs):
     df = pd.DataFrame(data, columns=table_attribs)
     validate_data(df)
     return df
+def extract_with_fallback(url, fallback_url, table_attribs):
+    try:
+        return extract(url, table_attribs)
+    except (ConnectionError, ValueError) as primary_error:
+        log_progress(
+            f"Primary extraction failed: {primary_error}. "
+            "Attempting fallback source"
+        )
+        try:
+            df = extract(fallback_url, table_attribs)
+            log_progress("Fallback extraction completed successfully")
+            return df
+        except (ConnectionError, ValueError) as fallback_error:
+            raise RuntimeError(
+                "Both primary and fallback data sources failed. "
+                f"Primary: {primary_error}. Fallback: {fallback_error}"
+            ) from fallback_error
 def validate_data(df):
     required_columns = ["Name", "MC_USD_Billion"]
-    if not all(column in df.columns for column in required_columns):
-        raise ValueError("Required columns are missing")
-    if len(df) != 10:
-        raise ValueError(f"Expected 10 banks, found {len(df)}")
-    if df["Name"].isna().any() or (df["Name"].str.strip() == "").any():
-        raise ValueError("Bank names cannot be empty")
-    if df["Name"].duplicated().any():
-        raise ValueError("Duplicate bank names found")
-    if df["MC_USD_Billion"].isna().any():
-        raise ValueError("Market-cap values cannot be empty")
-    if (df["MC_USD_Billion"] <= 0).any():
-        raise ValueError("Market-cap values must be positive")
-    if not pd.api.types.is_numeric_dtype(df["MC_USD_Billion"]):
-        raise ValueError("Market-cap values must be numeric")
+    if not all(column in df.columns for column in required_columns): raise ValueError("Required columns are missing")
+    if len(df) != 10: raise ValueError(f"Expected 10 banks, found {len(df)}")
+    if df["Name"].isna().any() or (df["Name"].str.strip() == "").any(): raise ValueError("Bank names cannot be empty")
+    if df["Name"].duplicated().any(): raise ValueError("Duplicate bank names found")
+    if df["MC_USD_Billion"].isna().any(): raise ValueError("Market-cap values cannot be empty")
+    if not pd.api.types.is_numeric_dtype(df["MC_USD_Billion"]): raise ValueError("Market-cap values must be numeric")
+    if (df["MC_USD_Billion"] <= 0).any(): raise ValueError("Market-cap values must be positive")
+def data_quality_summary(df):
+    return {"records": len(df), "missing_values": int(df.isna().sum().sum()),
+            "duplicate_names": int(df["Name"].duplicated().sum()),
+            "min_market_cap": float(df["MC_USD_Billion"].min()),
+            "max_market_cap": float(df["MC_USD_Billion"].max())}
 def transform(df, csv_path):
     exchange_df = pd.read_csv(csv_path)
+    required_columns = {"Currency", "Rate"}
+    if not required_columns.issubset(exchange_df.columns):
+        raise ValueError("Exchange-rate file must contain Currency and Rate columns")
     required_rates = {"GBP", "EUR", "INR"}
-    if not required_rates.issubset(exchange_df["Currency"]):
+    if not required_rates.issubset(set(exchange_df["Currency"].dropna())):
         raise ValueError("Required exchange rates are missing")
-    exchange_rate = dict(
-        zip(exchange_df["Currency"], exchange_df["Rate"])
-    )
-    gbp_rate = float(exchange_rate["GBP"])
-    eur_rate = float(exchange_rate["EUR"])
-    inr_rate = float(exchange_rate["INR"])
-    df["MC_GBP_Billion"] = [
-        np.round(x * gbp_rate, 2)
-        for x in df["MC_USD_Billion"]
-    ]
-    df["MC_EUR_Billion"] = [
-        np.round(x * eur_rate, 2)
-        for x in df["MC_USD_Billion"]
-    ]
-    df["MC_INR_Billion"] = [
-        np.round(x * inr_rate, 2)
-        for x in df["MC_USD_Billion"]
-    ]
+    if exchange_df["Currency"].duplicated().any():
+        raise ValueError("Duplicate currencies found")
+    exchange_df["Rate"] = pd.to_numeric(exchange_df["Rate"], errors="coerce")
+    if exchange_df["Rate"].isna().any():
+        raise ValueError("Exchange rates must be numeric and non-empty")
+    if (exchange_df["Rate"] <= 0).any():
+        raise ValueError("Exchange rates must be positive")
+    exchange_rate = dict(zip(exchange_df["Currency"], exchange_df["Rate"]))
+    gbp_rate, eur_rate, inr_rate = (float(exchange_rate[x]) for x in ("GBP", "EUR", "INR"))
+    df["MC_GBP_Billion"] = [np.round(x * gbp_rate, 2) for x in df["MC_USD_Billion"]]
+    df["MC_EUR_Billion"] = [np.round(x * eur_rate, 2) for x in df["MC_USD_Billion"]]
+    df["MC_INR_Billion"] = [np.round(x * inr_rate, 2) for x in df["MC_USD_Billion"]]
     return df
 def load_to_csv(df, output_path):
     df.to_csv(output_path, index=False)
@@ -159,16 +168,45 @@ def historical_comparison(sql_connection, table_name):
           AND current.Snapshot_Date = ?
         ORDER BY current.Rank
     """
-    return pd.read_sql(
-        query,
-        sql_connection,
-        params=[latest, previous, previous, latest]
+    return pd.read_sql(query, sql_connection, params=[latest, previous, previous, latest])
+def advanced_sql_analysis(sql_connection, table_name):
+    latest = f"(SELECT MAX(Snapshot_Date) FROM {table_name})"
+    rankings = pd.read_sql(
+        f"""SELECT Name, MC_USD_Billion,
+        RANK() OVER (ORDER BY MC_USD_Billion DESC) AS Current_Rank
+        FROM {table_name} WHERE Snapshot_Date = {latest}
+        ORDER BY Current_Rank""",
+        sql_connection
     )
+    concentration = pd.read_sql(
+        f"""SELECT ROUND(
+        100.0 * SUM(
+            CASE WHEN Current_Rank <= 5
+            THEN MC_USD_Billion ELSE 0 END
+        ) / SUM(MC_USD_Billion), 2)
+        AS Top_5_Market_Cap_Percent
+        FROM (
+            SELECT MC_USD_Billion,
+            RANK() OVER (
+                ORDER BY MC_USD_Billion DESC
+            ) AS Current_Rank
+            FROM {table_name}
+            WHERE Snapshot_Date = {latest}
+        )""",
+        sql_connection
+    )
+    gap = pd.read_sql(
+        f"""SELECT ROUND(
+        MAX(MC_USD_Billion) - MIN(MC_USD_Billion), 2)
+        AS Market_Cap_Gap
+        FROM {table_name}
+        WHERE Snapshot_Date = {latest}""",
+        sql_connection
+    )
+    return rankings, concentration, gap
 # Configuration
-url = (
-    "https://web.archive.org/web/20230908091635/"
-    "https://en.wikipedia.org/wiki/List_of_largest_banks"
-)
+url = "https://web.archive.org/web/20230908091635/https://en.wikipedia.org/wiki/List_of_largest_banks"
+fallback_url = "https://en.wikipedia.org/wiki/List_of_largest_banks"
 table_attribs = ["Name", "MC_USD_Billion"]
 output_csv = "./data/Largest_banks_data.csv"
 db_name = "Banks.db"
@@ -179,13 +217,27 @@ try:
     log_progress(
         "Preliminaries complete. Initiating ETL process"
     )
-    df = extract(url, table_attribs)
+    df = extract_with_fallback(
+        url,
+        fallback_url,
+        table_attribs
+    )
+    quality = data_quality_summary(df)
+    log_progress(
+        f"Data quality: {quality['records']} records, "
+        f"{quality['missing_values']} missing values, "
+        f"{quality['duplicate_names']} duplicate names, "
+        f"market cap range "
+        f"{quality['min_market_cap']} - {quality['max_market_cap']}"
+    )
+    print("\nData Quality Summary:")
+    print(quality)
     log_progress(
         "Data extraction and validation complete"
     )
     df = transform(df, csv_path)
     log_progress(
-        "Data transformation complete. Initiating Loading process"
+        "Data transformation and exchange-rate validation complete"
     )
     load_to_csv(df, output_csv)
     log_progress("Data saved to CSV file")
@@ -247,6 +299,16 @@ try:
     if not comparison.empty:
         print("\nHistorical Comparison:")
         print(comparison)
+    rankings, concentration, gap = advanced_sql_analysis(
+        conn,
+        table_name
+    )
+    print("\nCurrent Rankings:")
+    print(rankings)
+    print("\nTop 5 Market-Cap Concentration:")
+    print(concentration)
+    print("\nMarket-Cap Gap:")
+    print(gap)
     conn.close()
     log_progress("Process Complete")
 except Exception as error:
