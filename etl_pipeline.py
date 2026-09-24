@@ -7,7 +7,8 @@ from datetime import datetime
 import sqlite3
 def log_progress(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open("code_log.txt", "a") as f: f.write(f"{timestamp} : {message}\n")
+    with open("code_log.txt", "a") as f:
+        f.write(f"{timestamp} : {message}\n")
 def extract(url, table_attribs):
     try:
         response = requests.get(url, timeout=20)
@@ -18,28 +19,37 @@ def extract(url, table_attribs):
     tables = soup.find_all("table", {"class": "wikitable"})
     target_table = None
     for table in tables:
-        headers = [cell.get_text(" ", strip=True).lower() for cell in table.find_all("th")]
+        headers = [
+            cell.get_text(" ", strip=True).lower()
+            for cell in table.find_all("th")
+        ]
         header_text = " ".join(headers)
         if "market cap" in header_text and "bank" in header_text:
             target_table = table
             break
     if target_table is None:
         raise ValueError("Required bank market-cap table not found")
-    rows = target_table.find_all("tr")
     data = []
-    for row in rows[1:]:
+    for row in target_table.find_all("tr")[1:]:
         cols = row.find_all("td")
         if len(cols) < 3:
             continue
         try:
             name = cols[1].get_text(" ", strip=True)
-            market_cap = cols[2].get_text(" ", strip=True)
-            market_cap = float(market_cap.replace(",", "").replace("\n", ""))
+            market_cap = float(
+                cols[2].get_text(" ", strip=True)
+                .replace(",", "")
+                .replace("\n", "")
+            )
             data.append([name, market_cap])
         except (ValueError, IndexError):
             continue
         if len(data) == 10:
             break
+    if len(data) < 10:
+        raise ValueError(
+            f"Insufficient valid bank records extracted: {len(data)}"
+        )
     df = pd.DataFrame(data, columns=table_attribs)
     validate_data(df)
     return df
@@ -62,38 +72,71 @@ def extract_with_fallback(url, fallback_url, table_attribs):
             ) from fallback_error
 def validate_data(df):
     required_columns = ["Name", "MC_USD_Billion"]
-    if not all(column in df.columns for column in required_columns): raise ValueError("Required columns are missing")
-    if len(df) != 10: raise ValueError(f"Expected 10 banks, found {len(df)}")
-    if df["Name"].isna().any() or (df["Name"].str.strip() == "").any(): raise ValueError("Bank names cannot be empty")
-    if df["Name"].duplicated().any(): raise ValueError("Duplicate bank names found")
-    if df["MC_USD_Billion"].isna().any(): raise ValueError("Market-cap values cannot be empty")
-    if not pd.api.types.is_numeric_dtype(df["MC_USD_Billion"]): raise ValueError("Market-cap values must be numeric")
-    if (df["MC_USD_Billion"] <= 0).any(): raise ValueError("Market-cap values must be positive")
+    if not all(column in df.columns for column in required_columns):
+        raise ValueError("Required columns are missing")
+    if len(df) != 10:
+        raise ValueError(f"Expected 10 banks, found {len(df)}")
+    if df["Name"].isna().any() or (df["Name"].str.strip() == "").any():
+        raise ValueError("Bank names cannot be empty")
+    if df["Name"].duplicated().any():
+        raise ValueError("Duplicate bank names found")
+    if df["MC_USD_Billion"].isna().any():
+        raise ValueError("Market-cap values cannot be empty")
+    if not pd.api.types.is_numeric_dtype(df["MC_USD_Billion"]):
+        raise ValueError("Market-cap values must be numeric")
+    if not np.isfinite(df["MC_USD_Billion"]).all():
+        raise ValueError("Market-cap values must be finite")
+    if (df["MC_USD_Billion"] <= 0).any():
+        raise ValueError("Market-cap values must be positive")
 def data_quality_summary(df):
-    return {"records": len(df), "missing_values": int(df.isna().sum().sum()),
-            "duplicate_names": int(df["Name"].duplicated().sum()),
-            "min_market_cap": float(df["MC_USD_Billion"].min()),
-            "max_market_cap": float(df["MC_USD_Billion"].max())}
+    return {
+        "records": len(df),
+        "missing_values": int(df.isna().sum().sum()),
+        "duplicate_names": int(df["Name"].duplicated().sum()),
+        "min_market_cap": float(df["MC_USD_Billion"].min()),
+        "max_market_cap": float(df["MC_USD_Billion"].max())
+    }
 def transform(df, csv_path):
     exchange_df = pd.read_csv(csv_path)
     required_columns = {"Currency", "Rate"}
     if not required_columns.issubset(exchange_df.columns):
-        raise ValueError("Exchange-rate file must contain Currency and Rate columns")
+        raise ValueError(
+            "Exchange-rate file must contain Currency and Rate columns"
+        )
     required_rates = {"GBP", "EUR", "INR"}
-    if not required_rates.issubset(set(exchange_df["Currency"].dropna())):
+    if not required_rates.issubset(
+        set(exchange_df["Currency"].dropna())
+    ):
         raise ValueError("Required exchange rates are missing")
     if exchange_df["Currency"].duplicated().any():
         raise ValueError("Duplicate currencies found")
-    exchange_df["Rate"] = pd.to_numeric(exchange_df["Rate"], errors="coerce")
+    exchange_df["Rate"] = pd.to_numeric(
+        exchange_df["Rate"], errors="coerce"
+    )
     if exchange_df["Rate"].isna().any():
-        raise ValueError("Exchange rates must be numeric and non-empty")
+        raise ValueError(
+            "Exchange rates must be numeric and non-empty"
+        )
     if (exchange_df["Rate"] <= 0).any():
         raise ValueError("Exchange rates must be positive")
-    exchange_rate = dict(zip(exchange_df["Currency"], exchange_df["Rate"]))
-    gbp_rate, eur_rate, inr_rate = (float(exchange_rate[x]) for x in ("GBP", "EUR", "INR"))
-    df["MC_GBP_Billion"] = [np.round(x * gbp_rate, 2) for x in df["MC_USD_Billion"]]
-    df["MC_EUR_Billion"] = [np.round(x * eur_rate, 2) for x in df["MC_USD_Billion"]]
-    df["MC_INR_Billion"] = [np.round(x * inr_rate, 2) for x in df["MC_USD_Billion"]]
+    exchange_rate = dict(
+        zip(exchange_df["Currency"], exchange_df["Rate"])
+    )
+    gbp_rate, eur_rate, inr_rate = (
+        float(exchange_rate[x]) for x in ("GBP", "EUR", "INR")
+    )
+    df["MC_GBP_Billion"] = [
+        np.round(x * gbp_rate, 2)
+        for x in df["MC_USD_Billion"]
+    ]
+    df["MC_EUR_Billion"] = [
+        np.round(x * eur_rate, 2)
+        for x in df["MC_USD_Billion"]
+    ]
+    df["MC_INR_Billion"] = [
+        np.round(x * inr_rate, 2)
+        for x in df["MC_USD_Billion"]
+    ]
     return df
 def load_to_csv(df, output_path):
     df.to_csv(output_path, index=False)
@@ -138,14 +181,11 @@ def historical_comparison(sql_connection, table_name):
     previous = dates.iloc[1]["Snapshot_Date"]
     query = f"""
         WITH ranked AS (
-            SELECT
-                Snapshot_Date,
-                Name,
-                MC_USD_Billion,
-                RANK() OVER (
-                    PARTITION BY Snapshot_Date
-                    ORDER BY MC_USD_Billion DESC
-                ) AS Rank
+            SELECT Snapshot_Date, Name, MC_USD_Billion,
+            RANK() OVER (
+                PARTITION BY Snapshot_Date
+                ORDER BY MC_USD_Billion DESC
+            ) AS Rank
             FROM {table_name}
             WHERE Snapshot_Date IN (?, ?)
         )
@@ -158,23 +198,27 @@ def historical_comparison(sql_connection, table_name):
             current.MC_USD_Billion AS Current_MC,
             ROUND(
                 (current.MC_USD_Billion - previous.MC_USD_Billion)
-                * 100.0 / previous.MC_USD_Billion,
-                2
+                * 100.0 / previous.MC_USD_Billion, 2
             ) AS MC_Change_Percent
         FROM ranked previous
         JOIN ranked current
             ON previous.Name = current.Name
         WHERE previous.Snapshot_Date = ?
-          AND current.Snapshot_Date = ?
+        AND current.Snapshot_Date = ?
         ORDER BY current.Rank
     """
-    return pd.read_sql(query, sql_connection, params=[latest, previous, previous, latest])
+    return pd.read_sql(
+        query,
+        sql_connection,
+        params=[latest, previous, previous, latest]
+    )
 def advanced_sql_analysis(sql_connection, table_name):
     latest = f"(SELECT MAX(Snapshot_Date) FROM {table_name})"
     rankings = pd.read_sql(
         f"""SELECT Name, MC_USD_Billion,
         RANK() OVER (ORDER BY MC_USD_Billion DESC) AS Current_Rank
-        FROM {table_name} WHERE Snapshot_Date = {latest}
+        FROM {table_name}
+        WHERE Snapshot_Date = {latest}
         ORDER BY Current_Rank""",
         sql_connection
     )
@@ -205,7 +249,10 @@ def advanced_sql_analysis(sql_connection, table_name):
     )
     return rankings, concentration, gap
 # Configuration
-url = "https://web.archive.org/web/20230908091635/https://en.wikipedia.org/wiki/List_of_largest_banks"
+url = (
+    "https://web.archive.org/web/20230908091635/"
+    "https://en.wikipedia.org/wiki/List_of_largest_banks"
+)
 fallback_url = "https://en.wikipedia.org/wiki/List_of_largest_banks"
 table_attribs = ["Name", "MC_USD_Billion"]
 output_csv = "./data/Largest_banks_data.csv"
@@ -213,108 +260,98 @@ db_name = "Banks.db"
 table_name = "Largest_banks"
 csv_path = "./data/exchange_rate.csv"
 # ETL Process
-try:
-    log_progress(
-        "Preliminaries complete. Initiating ETL process"
-    )
-    df = extract_with_fallback(
-        url,
-        fallback_url,
-        table_attribs
-    )
-    quality = data_quality_summary(df)
-    log_progress(
-        f"Data quality: {quality['records']} records, "
-        f"{quality['missing_values']} missing values, "
-        f"{quality['duplicate_names']} duplicate names, "
-        f"market cap range "
-        f"{quality['min_market_cap']} - {quality['max_market_cap']}"
-    )
-    print("\nData Quality Summary:")
-    print(quality)
-    log_progress(
-        "Data extraction and validation complete"
-    )
-    df = transform(df, csv_path)
-    log_progress(
-        "Data transformation and exchange-rate validation complete"
-    )
-    load_to_csv(df, output_csv)
-    log_progress("Data saved to CSV file")
-    conn = sqlite3.connect(db_name)
-    log_progress("SQL Connection initiated")
-    load_to_db(df, conn, table_name)
-    log_progress(
-        "Data loaded to Database as a table"
-    )
-    run_query(
-        """
-        SELECT Name, MC_USD_Billion, MC_GBP_Billion
-        FROM Largest_banks
-        WHERE Snapshot_Date = (
-            SELECT MAX(Snapshot_Date)
-            FROM Largest_banks
+def run_etl():
+    conn = None
+    try:
+        log_progress("Preliminaries complete. Initiating ETL process")
+        df = extract_with_fallback(
+            url, fallback_url, table_attribs
         )
-        ORDER BY MC_USD_Billion DESC
-        LIMIT 5
-        """,
-        conn
-    )
-    run_query(
-        """
-        SELECT ROUND(AVG(MC_GBP_Billion), 2)
-        AS Avg_GBP_Market_Cap
-        FROM Largest_banks
-        WHERE Snapshot_Date = (
-            SELECT MAX(Snapshot_Date)
-            FROM Largest_banks
+        quality = data_quality_summary(df)
+        log_progress(
+            f"Data quality: {quality['records']} records, "
+            f"{quality['missing_values']} missing values, "
+            f"{quality['duplicate_names']} duplicate names, "
+            f"market cap range "
+            f"{quality['min_market_cap']} - {quality['max_market_cap']}"
         )
-        """,
-        conn
-    )
-    run_query(
-        """
-        SELECT Name, MC_USD_Billion
-        FROM Largest_banks
-        WHERE Snapshot_Date = (
-            SELECT MAX(Snapshot_Date)
-            FROM Largest_banks
+        print("\nData Quality Summary:")
+        print(quality)
+        log_progress("Data extraction and validation complete")
+        df = transform(df, csv_path)
+        log_progress(
+            "Data transformation and exchange-rate validation complete"
         )
-        AND MC_USD_Billion > (
-            SELECT AVG(MC_USD_Billion)
+        load_to_csv(df, output_csv)
+        log_progress("Data saved to CSV file")
+        conn = sqlite3.connect(db_name)
+        log_progress("SQL Connection initiated")
+        load_to_db(df, conn, table_name)
+        log_progress("Data loaded to Database as a table")
+        run_query(
+            """
+            SELECT Name, MC_USD_Billion, MC_GBP_Billion
             FROM Largest_banks
             WHERE Snapshot_Date = (
                 SELECT MAX(Snapshot_Date)
                 FROM Largest_banks
             )
+            ORDER BY MC_USD_Billion DESC
+            LIMIT 5
+            """,
+            conn
         )
-        ORDER BY MC_USD_Billion DESC
-        """,
-        conn
-    )
-    comparison = historical_comparison(
-        conn,
-        table_name
-    )
-    if not comparison.empty:
-        print("\nHistorical Comparison:")
-        print(comparison)
-    rankings, concentration, gap = advanced_sql_analysis(
-        conn,
-        table_name
-    )
-    print("\nCurrent Rankings:")
-    print(rankings)
-    print("\nTop 5 Market-Cap Concentration:")
-    print(concentration)
-    print("\nMarket-Cap Gap:")
-    print(gap)
-    conn.close()
-    log_progress("Process Complete")
-except Exception as error:
-    log_progress(
-        f"ETL process failed: {error}"
-    )
-    print(
-        f"\nETL process failed: {error}"
-    )
+        run_query(
+            """
+            SELECT ROUND(AVG(MC_GBP_Billion), 2)
+            AS Avg_GBP_Market_Cap
+            FROM Largest_banks
+            WHERE Snapshot_Date = (
+                SELECT MAX(Snapshot_Date)
+                FROM Largest_banks
+            )
+            """,
+            conn
+        )
+        run_query(
+            """
+            SELECT Name, MC_USD_Billion
+            FROM Largest_banks
+            WHERE Snapshot_Date = (
+                SELECT MAX(Snapshot_Date)
+                FROM Largest_banks
+            )
+            AND MC_USD_Billion > (
+                SELECT AVG(MC_USD_Billion)
+                FROM Largest_banks
+                WHERE Snapshot_Date = (
+                    SELECT MAX(Snapshot_Date)
+                    FROM Largest_banks
+                )
+            )
+            ORDER BY MC_USD_Billion DESC
+            """,
+            conn
+        )
+        comparison = historical_comparison(conn, table_name)
+        if not comparison.empty:
+            print("\nHistorical Comparison:")
+            print(comparison)
+        rankings, concentration, gap = advanced_sql_analysis(
+            conn, table_name
+        )
+        print("\nCurrent Rankings:")
+        print(rankings)
+        print("\nTop 5 Market-Cap Concentration:")
+        print(concentration)
+        print("\nMarket-Cap Gap:")
+        print(gap)
+        log_progress("Process Complete")
+    except Exception as error:
+        log_progress(f"ETL process failed: {error}")
+        print(f"\nETL process failed: {error}")
+    finally:
+        if conn is not None:
+            conn.close()
+if __name__ == "__main__":
+    run_etl()
