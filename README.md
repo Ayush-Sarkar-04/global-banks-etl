@@ -1,16 +1,18 @@
 # Global Banks Data ETL Pipeline
 
-A Python-based ETL pipeline for extracting market capitalization data for the world's largest banks, validating and transforming the data, storing historical snapshots, and performing SQL-based analysis.
+A Python-based ETL pipeline for extracting market capitalization data for the world's largest banks, validating and transforming the data, reconciling multiple current sources, storing historical snapshots, and performing SQL-based analysis.
 
 ## Overview
 
 The project implements an end-to-end **Extract → Transform → Load** workflow.
 
-The pipeline collects the top 10 banks from a web-based source, validates the extracted records, converts market capitalization values from USD into GBP, EUR, and INR, and stores the processed data in both CSV and SQLite.
+The pipeline collects the top 10 banks from multiple web-based sources, validates and reconciles the extracted records, converts market capitalization values from USD into GBP, EUR, and INR, and stores the processed data in both CSV and SQLite.
+
+CompaniesMarketCap and TradingView are used as current market-cap sources, while Wikipedia is used as a reference and validation source. Current-source values are reconciled using the median, with source count and spread information retained for auditability.
 
 The SQLite database also maintains dated snapshots, allowing the pipeline to track changes in bank rankings and market capitalization across different runs.
 
-The project focuses on building a compact and reliable ETL workflow while demonstrating practical data engineering concepts such as web extraction, validation, data-quality monitoring, transformation, database loading, historical data storage, SQL analysis, logging, and automated testing.
+The project focuses on building a compact and reliable ETL workflow while demonstrating practical data engineering concepts such as multi-source web extraction, validation, source reconciliation, data-quality monitoring, transformation, database loading, historical data storage, SQL analysis, logging, and automated testing.
 
 ## Pipeline
 
@@ -51,7 +53,7 @@ Historical Comparison
 
 ### Web Data Extraction
 
-The pipeline extracts the top 10 banks from the source using:
+The pipeline extracts the top 10 banks from current and reference sources using:
 
 - `Requests` for HTTP requests
 - `BeautifulSoup` for HTML parsing
@@ -59,6 +61,18 @@ The pipeline extracts the top 10 banks from the source using:
 - Request timeouts and HTTP error handling
 - Primary and fallback source handling when extraction fails
 - Safe handling of malformed rows
+- Bank-name normalization across sources
+- Market-cap parsing for values expressed in billions, millions, or trillions
+- Retention of recognized banks even when their names are not present in the predefined alias list
+
+Current market-cap sources:
+
+- CompaniesMarketCap
+- TradingView
+
+Reference source:
+
+- Wikipedia — used for validation rather than as the current market-cap source
 
 ### Data Validation
 
@@ -80,6 +94,26 @@ Validation checks include:
 - Duplicate currencies are rejected
 
 Invalid data causes the pipeline to stop rather than silently producing an incorrect dataset.
+
+### Multi-Source Reconciliation
+
+Current market-cap values are reconciled across the available current sources.
+
+For each bank, the pipeline records:
+
+- `Source_Count` — number of current sources contributing a market-cap value
+- `Reconciliation_Status` — whether one, two, or three source values were available
+- `Spread_Status` — whether the difference between the highest and lowest current-source values is within the 5% agreement threshold
+- Reconciled market capitalization — calculated using the median of the available current-source values
+
+A spread above 5% is marked for review but does not automatically stop the pipeline. If one current source is unavailable, the pipeline continues with the remaining source. If all current sources fail, extraction fails.
+
+Wikipedia is handled separately as a reference check:
+
+- `Wikipedia_Difference_Percent` records the difference from the reconciled current value
+- `Reference_Status` records `REFERENCE_MATCH`, `REFERENCE_REVIEW`, or `REFERENCE_UNAVAILABLE`
+
+Reference-source failure is therefore non-fatal and is explicitly represented in the output rather than being silently ignored.
 
 ### Data Quality Monitoring
 
@@ -132,6 +166,8 @@ SQLite provides the historical layer of the pipeline by retaining snapshots from
 ### Historical Snapshots
 
 Each database load is associated with a `Snapshot_Date`.
+
+The pipeline retains up to five distinct snapshots, providing a compact historical window for trend and comparison analysis.
 
 The database therefore allows multiple snapshots to coexist:
 
@@ -199,7 +235,15 @@ global-banks-etl/
 │   └── Largest_banks_data.csv
 │
 ├── etl_pipeline.py
-├── test_main.py
+├── extraction.py
+├── analytics.py
+│
+├── test/
+│   ├── test_etl_pipeline.py
+│   ├── test_extraction.py
+│   └── test_analytics.py
+│
+├── pytest.ini
 ├── README.md
 ├── requirements.txt
 └── .gitignore
@@ -217,6 +261,12 @@ global-banks-etl/
 - **SQLite** — database storage and historical snapshots
 - **SQL** — analytical queries
 - **Pytest** — automated testing
+
+The implementation is separated into three focused modules:
+
+- `extraction.py` — web extraction, source fallback, bank-name normalization, market-cap parsing, validation, and source reconciliation
+- `etl_pipeline.py` — ETL orchestration, data-quality monitoring, transformation, CSV loading, and SQLite loading
+- `analytics.py` — SQL analysis, historical comparison, ranking analysis, concentration analysis, and reusable query execution
 
 ## Running the Project
 
@@ -257,6 +307,7 @@ The pipeline will:
 7. Execute SQL analysis
 8. Compare the latest two snapshots when historical data is available
 9. Log the process
+10. Maintain the historical snapshot window
 
 ## Running Tests
 
@@ -268,12 +319,17 @@ Run:
 pytest -q
 ```
 
-The test suite currently contains **45 automated tests**, covering:
+The test suite currently contains **53 automated tests**, covering:
 
 - Data validation
 - Table identification
 - HTTP error handling
 - Fallback extraction
+- Multi-source extraction
+- Bank-name normalization
+- Market-cap parsing
+- Source reconciliation
+- Reference-source failure handling
 - Currency transformation
 - Exchange-rate validation
 - Database loading
@@ -285,6 +341,7 @@ The test suite currently contains **45 automated tests**, covering:
 - Data-quality monitoring
 - SQL analysis
 - Latest-snapshot isolation
+- Reusable SQL query execution
 - ETL reliability and edge cases
 
 ## Logging
@@ -315,6 +372,8 @@ This project demonstrates:
 - Change tracking
 - Error handling
 - Fallback source handling
+- Multi-source reconciliation
+- Reference-source validation
 - Process logging
 - Automated testing
 - End-to-end ETL design
