@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import etl_pipeline
+
 from etl_pipeline import (
     data_quality_summary,
     load_to_csv,
@@ -177,3 +179,100 @@ def test_same_day_snapshot_preserves_latest_data():
     assert len(result) == 1
     assert result.iloc[0]["MC_USD_Billion"] == 999
 
+
+
+def test_run_etl_reports_extraction_stage_failure(monkeypatch, capsys):
+    logs = []
+
+    def fail_extraction(*args, **kwargs):
+        raise ConnectionError("source unavailable")
+
+    monkeypatch.setattr(etl_pipeline, "log_progress", logs.append)
+    monkeypatch.setattr(
+        etl_pipeline,
+        "extract_multi_source",
+        fail_extraction
+    )
+
+    etl_pipeline.run_etl()
+
+    assert any("ETL extraction stage failed" in message for message in logs)
+    assert "ETL extraction stage failed: source unavailable" in capsys.readouterr().out
+
+
+def test_run_etl_reports_transformation_stage_failure(monkeypatch, capsys):
+    logs = []
+
+    monkeypatch.setattr(etl_pipeline, "log_progress", logs.append)
+    monkeypatch.setattr(
+        etl_pipeline,
+        "extract_multi_source",
+        lambda *args, **kwargs: (valid_data(), pd.DataFrame())
+    )
+    monkeypatch.setattr(
+        etl_pipeline,
+        "transform",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ValueError("invalid exchange rates")
+        )
+    )
+
+    etl_pipeline.run_etl()
+
+    assert any("ETL transformation stage failed" in message for message in logs)
+    assert "ETL transformation stage failed: invalid exchange rates" in capsys.readouterr().out
+
+
+def test_run_etl_reports_load_stage_failure(monkeypatch, capsys):
+    logs = []
+
+    monkeypatch.setattr(etl_pipeline, "log_progress", logs.append)
+    monkeypatch.setattr(
+        etl_pipeline,
+        "extract_multi_source",
+        lambda *args, **kwargs: (valid_data(), pd.DataFrame())
+    )
+    monkeypatch.setattr(etl_pipeline, "transform", lambda df, path: df)
+    monkeypatch.setattr(
+        etl_pipeline,
+        "load_to_csv",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("output file unavailable")
+        )
+    )
+
+    etl_pipeline.run_etl()
+
+    assert any("ETL load stage failed" in message for message in logs)
+    assert "ETL load stage failed: output file unavailable" in capsys.readouterr().out
+
+
+def test_run_etl_reports_analysis_stage_failure(monkeypatch, tmp_path, capsys):
+    logs = []
+
+    monkeypatch.setattr(etl_pipeline, "log_progress", logs.append)
+    monkeypatch.setattr(
+        etl_pipeline,
+        "extract_multi_source",
+        lambda *args, **kwargs: (valid_data(), pd.DataFrame())
+    )
+    monkeypatch.setattr(etl_pipeline, "transform", lambda df, path: df)
+    monkeypatch.setattr(etl_pipeline, "load_to_csv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(etl_pipeline, "load_to_db", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        etl_pipeline,
+        "run_query",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("analysis query failed")
+        )
+    )
+    monkeypatch.setattr(
+        etl_pipeline,
+        "db_name",
+        str(tmp_path / "Banks.db")
+    )
+
+    etl_pipeline.run_etl()
+
+    assert any("ETL analysis stage failed" in message for message in logs)
+    assert "ETL analysis stage failed: analysis query failed" in capsys.readouterr().out

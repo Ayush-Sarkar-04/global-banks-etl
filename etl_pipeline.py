@@ -126,8 +126,9 @@ def load_to_db(df, sql_connection, table_name, snapshot_type="RECONCILED"):
 
 def run_etl():
     conn = None
+    log_progress("Preliminaries complete. Initiating ETL process")
+
     try:
-        log_progress("Preliminaries complete. Initiating ETL process")
         df, reconciliation = extract_multi_source(
             url,
             companies_market_cap_url,
@@ -147,16 +148,34 @@ def run_etl():
         print("\nData Quality Summary:")
         print(quality)
         log_progress("Data extraction and validation complete")
+    except Exception as error:
+        log_progress(f"ETL extraction stage failed: {error}")
+        print(f"\nETL extraction stage failed: {error}")
+        return
+
+    try:
         df = transform(df, csv_path)
         log_progress(
             "Data transformation and exchange-rate validation complete"
         )
+    except Exception as error:
+        log_progress(f"ETL transformation stage failed: {error}")
+        print(f"\nETL transformation stage failed: {error}")
+        return
+
+    try:
         load_to_csv(df, output_csv)
         log_progress("Data saved to CSV file")
         conn = sqlite3.connect(db_name)
         log_progress("SQL Connection initiated")
         load_to_db(df, conn, table_name)
         log_progress("Data loaded to Database as a table")
+    except Exception as error:
+        log_progress(f"ETL load stage failed: {error}")
+        print(f"\nETL load stage failed: {error}")
+        return
+
+    try:
         run_query(
             """
             SELECT Name, MC_USD_Billion, MC_GBP_Billion
@@ -223,8 +242,8 @@ def run_etl():
         print(gap)
         log_progress("Process Complete")
     except Exception as error:
-        log_progress(f"ETL process failed: {error}")
-        print(f"\nETL process failed: {error}")
+        log_progress(f"ETL analysis stage failed: {error}")
+        print(f"\nETL analysis stage failed: {error}")
     finally:
         if conn is not None:
             conn.close()
