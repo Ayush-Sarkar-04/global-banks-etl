@@ -166,8 +166,11 @@ def extract_ranked_source(url, source_name):
         )
         if not match:
             continue
-        name = normalize_bank_name(text)
-        if name not in BANK_ALIASES.values():
+        market_cap_start = match.start()
+        name_text = text[:market_cap_start].strip()
+        name_text = re.sub(r"^\s*\d+[.)]?\s+", "", name_text)
+        name = normalize_bank_name(name_text)
+        if not name:
             continue
         try:
             records.append([name, parse_market_cap(match.group(0))])
@@ -247,6 +250,11 @@ def reconcile_sources(source_frames, reference_frames=None):
                 "REFERENCE_MATCH",
                 "REFERENCE_REVIEW"
             )
+        else:
+            merged["Reference_Status"] = "REFERENCE_UNAVAILABLE"
+    else:
+        merged["Wikipedia_Difference_Percent"] = np.nan
+        merged["Reference_Status"] = "REFERENCE_UNAVAILABLE"
     merged = merged.dropna(
         subset=["Accepted_MC_USD_Billion"]
     ).sort_values(

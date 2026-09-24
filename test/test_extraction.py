@@ -271,6 +271,46 @@ def test_extract_ranked_source_normalizes_and_parses_rows(monkeypatch):
     assert result.iloc[0]["MC_USD_Billion"] == 900.0
     assert result.iloc[2]["MC_USD_Billion"] == 300.0
 
+def test_extract_ranked_source_retains_unaliased_bank(monkeypatch):
+    banks = [
+        ("JPMorgan Chase", "900 B USD"),
+        ("Bank of America", "400 B USD"),
+        ("Industrial & Commercial Bank of China", "300 B USD"),
+        ("Agricultural Bank of China", "250 B USD"),
+        ("HSBC", "200 B USD"),
+        ("China Construction Bank", "190 B USD"),
+        ("Bank of China", "180 B USD"),
+        ("Morgan Stanley", "170 B USD"),
+        ("Royal Bank of Canada", "160 B USD"),
+        ("Example Community Bank", "150 B USD"),
+    ]
+
+    rows = "".join(
+        f"<tr><td>{name}</td><td>{market_cap}</td></tr>"
+        for name, market_cap in banks
+    )
+    html = f"<table>{rows}</table>"
+
+    class Response:
+        text = html
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(
+        "requests.get",
+        lambda *args, **kwargs: Response()
+    )
+
+    result = extract_ranked_source(
+        "http://test",
+        "CompaniesMarketCap"
+    )
+
+    assert len(result) == 10
+    assert "Example Community Bank" in result["Name"].tolist()
+
+
 def test_extract_ranked_source_rejects_insufficient_recognized_banks(monkeypatch):
     html = """
     <table>
@@ -371,6 +411,26 @@ def test_reconcile_sources_handles_two_available_sources():
     assert audit.iloc[0]["Accepted_MC_USD_Billion"] == 110.0
     assert audit.iloc[0]["Reconciliation_Status"] == "TWO_SOURCE"
     assert audit.iloc[0]["Spread_Status"] == "REVIEW"
+
+def test_reconcile_sources_marks_reference_unavailable():
+    names = valid_data()["Name"]
+    source_frames = {
+        "CompaniesMarketCap": pd.DataFrame({
+            "Name": names,
+            "MC_USD_Billion": [100] * 10
+        }),
+        "TradingView": pd.DataFrame({
+            "Name": names,
+            "MC_USD_Billion": [102] * 10
+        })
+    }
+
+    result, audit = reconcile_sources(source_frames)
+
+    assert len(result) == 10
+    assert set(audit["Reference_Status"]) == {"REFERENCE_UNAVAILABLE"}
+    assert audit["Wikipedia_Difference_Percent"].isna().all()
+
 
 def test_extract_multi_source_reconciles_all_available_sources(monkeypatch):
     names = valid_data()["Name"]

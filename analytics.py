@@ -6,6 +6,7 @@ def run_query(query_statement, sql_connection):
     print(f"\nQuery: {query_statement}")
     result = pd.read_sql(query_statement, sql_connection)
     print(result)
+    return result
 
 
 def historical_trend(sql_connection, table_name):

@@ -26,6 +26,24 @@ def add_snapshot(connection, dataframe, date):
     snapshot["Snapshot_Date"] = date
     snapshot["Snapshot_Type"] = "RECONCILED"
     snapshot.to_sql("Banks", connection, if_exists="append", index=False)
+def test_run_query_returns_dataframe():
+    conn = sqlite3.connect(":memory:")
+    pd.DataFrame({
+        "Name": ["Bank A"],
+        "MC_USD_Billion": [100]
+    }).to_sql("Banks", conn, index=False)
+
+    result = run_query(
+        "SELECT Name, MC_USD_Billion FROM Banks",
+        conn
+    )
+
+    assert isinstance(result, pd.DataFrame)
+    assert result.iloc[0]["Name"] == "Bank A"
+    assert result.iloc[0]["MC_USD_Billion"] == 100
+    conn.close()
+
+
 def test_historical_comparison_requires_two_snapshots():
     conn = sqlite3.connect(":memory:")
     df = valid_data()
