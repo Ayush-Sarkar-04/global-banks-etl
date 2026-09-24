@@ -177,7 +177,7 @@ The pipeline performs SQL analysis on the latest snapshot, including:
 
 ## Dataset
 
-The processed dataset contains the following fields:
+The SQLite snapshot dataset contains the following fields:
 
 | Column | Description |
 |---|---|
@@ -268,7 +268,7 @@ Run:
 pytest -q
 ```
 
-The test suite covers:
+The test suite currently contains **45 automated tests**, covering:
 
 - Data validation
 - Table identification
