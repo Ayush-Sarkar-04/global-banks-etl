@@ -1,12 +1,14 @@
 # Extraction and source reconciliation for Largest Banks data
+import logging
 import re
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_FALLBACK_URL = "https://en.wikipedia.org/wiki/List_of_largest_banks"
 DEFAULT_TABLE_ATTRIBS = ["Name", "MC_USD_Billion"]
@@ -33,12 +35,6 @@ BANK_ALIASES = {
     "mizuho financial": "Mizuho Financial",
     "bnp paribas": "BNP Paribas",
 }
-
-
-def log_progress(message):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open("code_log.txt", "a") as f:
-        f.write(f"{timestamp} : {message}\n")
 
 
 def validate_data(df):
@@ -111,13 +107,13 @@ def extract_with_fallback(url, fallback_url, table_attribs):
     try:
         return extract(url, table_attribs)
     except (ConnectionError, ValueError) as primary_error:
-        log_progress(
+        logger.info(
             f"Primary extraction failed: {primary_error}. "
             "Attempting fallback source"
         )
         try:
             df = extract(fallback_url, table_attribs)
-            log_progress("Fallback extraction completed successfully")
+            logger.info("Fallback extraction completed successfully")
             return df
         except (ConnectionError, ValueError) as fallback_error:
             raise RuntimeError(
@@ -280,25 +276,25 @@ def extract_multi_source(wikipedia_url, companies_url, tradingview_url):
             DEFAULT_FALLBACK_URL,
             DEFAULT_TABLE_ATTRIBS
         )
-        log_progress("Wikipedia reference extraction completed successfully")
+        logger.info("Wikipedia reference extraction completed successfully")
     except (ConnectionError, ValueError, RuntimeError) as error:
-        log_progress(f"Wikipedia reference extraction failed: {error}")
+        logger.info(f"Wikipedia reference extraction failed: {error}")
     for source, source_url in current_urls.items():
         try:
             current_frames[source] = extract_ranked_source(
                 source_url,
                 source
             )
-            log_progress(f"{source} extraction completed successfully")
+            logger.info(f"{source} extraction completed successfully")
         except (ConnectionError, ValueError) as error:
-            log_progress(f"{source} extraction failed: {error}")
+            logger.info(f"{source} extraction failed: {error}")
     if not current_frames:
         raise RuntimeError("All current market-cap sources failed")
     result, reconciliation = reconcile_sources(
         current_frames,
         reference_frames
     )
-    log_progress(
+    logger.info(
         "Source reconciliation completed using "
         f"{len(current_frames)} current source(s)"
     )

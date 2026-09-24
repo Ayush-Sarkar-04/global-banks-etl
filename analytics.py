@@ -1,15 +1,27 @@
 # Historical and SQL analytics for Largest Banks data
+import logging
+import sqlite3
+
 import pandas as pd
 
+logger = logging.getLogger(__name__)
 
-def run_query(query_statement, sql_connection):
-    print(f"\nQuery: {query_statement}")
+
+def run_query(
+    query_statement: str,
+    sql_connection: sqlite3.Connection
+) -> pd.DataFrame:
+    """Execute a SQL query, log its result, and return the result DataFrame."""
+    logger.info("Query:\n%s", query_statement)
     result = pd.read_sql(query_statement, sql_connection)
-    print(result)
+    logger.info("\n%s", result)
     return result
 
 
-def historical_trend(sql_connection, table_name):
+def historical_trend(
+    sql_connection: sqlite3.Connection, table_name: str
+) -> pd.DataFrame:
+    """Return ranking and market-cap data for the latest five snapshots"""
     dates = pd.read_sql(
         f"""
         SELECT DISTINCT Snapshot_Date
@@ -42,7 +54,10 @@ def historical_trend(sql_connection, table_name):
     )
 
 
-def historical_comparison(sql_connection, table_name):
+def historical_comparison(
+    sql_connection: sqlite3.Connection, table_name: str
+) -> pd.DataFrame:
+    """Compare rankings and market-cap changes across the snapshot window"""
     dates = pd.read_sql(
         f"""
         SELECT DISTINCT Snapshot_Date
@@ -53,7 +68,7 @@ def historical_comparison(sql_connection, table_name):
         sql_connection
     )
     if len(dates) < 2:
-        print("\nHistorical comparison requires at least two snapshots.")
+        logger.info("Historical comparison requires at least two snapshots.")
         return pd.DataFrame()
     latest = dates.iloc[0]["Snapshot_Date"]
     previous = dates.iloc[-1]["Snapshot_Date"]
@@ -92,7 +107,10 @@ def historical_comparison(sql_connection, table_name):
     )
 
 
-def advanced_sql_analysis(sql_connection, table_name):
+def advanced_sql_analysis(
+    sql_connection: sqlite3.Connection, table_name: str
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Return current rankings, top-five concentration, and market-cap gap"""
     latest = f"(SELECT MAX(Snapshot_Date) FROM {table_name})"
     rankings = pd.read_sql(
         f"""SELECT Name, MC_USD_Billion,

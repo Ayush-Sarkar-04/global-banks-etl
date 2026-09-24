@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import numpy as np
 import pandas as pd
@@ -181,29 +182,26 @@ def test_same_day_snapshot_preserves_latest_data():
 
 
 
-def test_run_etl_reports_extraction_stage_failure(monkeypatch, capsys):
-    logs = []
-
+def test_run_etl_reports_extraction_stage_failure(monkeypatch, caplog):
     def fail_extraction(*args, **kwargs):
         raise ConnectionError("source unavailable")
 
-    monkeypatch.setattr(etl_pipeline, "log_progress", logs.append)
     monkeypatch.setattr(
         etl_pipeline,
         "extract_multi_source",
         fail_extraction
     )
 
-    etl_pipeline.run_etl()
+    with caplog.at_level(logging.ERROR):
+        etl_pipeline.run_etl()
 
-    assert any("ETL extraction stage failed" in message for message in logs)
-    assert "ETL extraction stage failed: source unavailable" in capsys.readouterr().out
+    assert any(
+        "ETL extraction stage failed" in record.message
+        for record in caplog.records
+    )
 
 
-def test_run_etl_reports_transformation_stage_failure(monkeypatch, capsys):
-    logs = []
-
-    monkeypatch.setattr(etl_pipeline, "log_progress", logs.append)
+def test_run_etl_reports_transformation_stage_failure(monkeypatch, caplog):
     monkeypatch.setattr(
         etl_pipeline,
         "extract_multi_source",
@@ -217,16 +215,16 @@ def test_run_etl_reports_transformation_stage_failure(monkeypatch, capsys):
         )
     )
 
-    etl_pipeline.run_etl()
+    with caplog.at_level(logging.ERROR):
+        etl_pipeline.run_etl()
 
-    assert any("ETL transformation stage failed" in message for message in logs)
-    assert "ETL transformation stage failed: invalid exchange rates" in capsys.readouterr().out
+    assert any(
+        "ETL transformation stage failed" in record.message
+        for record in caplog.records
+    )
 
 
-def test_run_etl_reports_load_stage_failure(monkeypatch, capsys):
-    logs = []
-
-    monkeypatch.setattr(etl_pipeline, "log_progress", logs.append)
+def test_run_etl_reports_load_stage_failure(monkeypatch, caplog):
     monkeypatch.setattr(
         etl_pipeline,
         "extract_multi_source",
@@ -241,24 +239,34 @@ def test_run_etl_reports_load_stage_failure(monkeypatch, capsys):
         )
     )
 
-    etl_pipeline.run_etl()
+    with caplog.at_level(logging.ERROR):
+        etl_pipeline.run_etl()
 
-    assert any("ETL load stage failed" in message for message in logs)
-    assert "ETL load stage failed: output file unavailable" in capsys.readouterr().out
+    assert any(
+        "ETL load stage failed" in record.message
+        for record in caplog.records
+    )
 
 
-def test_run_etl_reports_analysis_stage_failure(monkeypatch, tmp_path, capsys):
-    logs = []
-
-    monkeypatch.setattr(etl_pipeline, "log_progress", logs.append)
+def test_run_etl_reports_analysis_stage_failure(
+    monkeypatch, tmp_path, caplog
+):
     monkeypatch.setattr(
         etl_pipeline,
         "extract_multi_source",
         lambda *args, **kwargs: (valid_data(), pd.DataFrame())
     )
     monkeypatch.setattr(etl_pipeline, "transform", lambda df, path: df)
-    monkeypatch.setattr(etl_pipeline, "load_to_csv", lambda *args, **kwargs: None)
-    monkeypatch.setattr(etl_pipeline, "load_to_db", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        etl_pipeline,
+        "load_to_csv",
+        lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        etl_pipeline,
+        "load_to_db",
+        lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         etl_pipeline,
         "run_query",
@@ -272,7 +280,10 @@ def test_run_etl_reports_analysis_stage_failure(monkeypatch, tmp_path, capsys):
         str(tmp_path / "Banks.db")
     )
 
-    etl_pipeline.run_etl()
+    with caplog.at_level(logging.ERROR):
+        etl_pipeline.run_etl()
 
-    assert any("ETL analysis stage failed" in message for message in logs)
-    assert "ETL analysis stage failed: analysis query failed" in capsys.readouterr().out
+    assert any(
+        "ETL analysis stage failed" in record.message
+        for record in caplog.records
+    )

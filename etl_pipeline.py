@@ -1,6 +1,8 @@
 # ETL orchestration, validation, transformation and loading for Largest Banks data
+import logging
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -13,9 +15,19 @@ from analytics import (
 )
 from extraction import (
     extract_multi_source,
-    log_progress,
     validate_data,
 )
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s : %(message)s",
+    handlers=[
+        logging.FileHandler("code_log.txt"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
 
 
 # Configuration
@@ -36,7 +48,8 @@ table_name = "Largest_banks"
 csv_path = "./data/exchange_rate.csv"
 
 
-def data_quality_summary(df):
+def data_quality_summary(df: pd.DataFrame) -> dict[str, float | int]:
+    """Return record counts, missing values, duplicates, and market-cap range"""
     return {
         "records": len(df),
         "missing_values": int(df.isna().sum().sum()),
@@ -46,7 +59,8 @@ def data_quality_summary(df):
     }
 
 
-def transform(df, csv_path):
+def transform(df: pd.DataFrame, csv_path: str | Path) -> pd.DataFrame:
+    """Add GBP, EUR, and INR market-cap values using validated exchange rates"""
     exchange_df = pd.read_csv(csv_path)
     required_columns = {"Currency", "Rate"}
     if not required_columns.issubset(exchange_df.columns):
@@ -90,11 +104,18 @@ def transform(df, csv_path):
     return df
 
 
-def load_to_csv(df, output_path):
+def load_to_csv(df: pd.DataFrame, output_path: str | Path) -> None:
+    """Write the transformed bank dataset to a CSV file"""
     df.to_csv(output_path, index=False)
 
 
-def load_to_db(df, sql_connection, table_name, snapshot_type="RECONCILED"):
+def load_to_db(
+    df: pd.DataFrame,
+    sql_connection: sqlite3.Connection,
+    table_name: str,
+    snapshot_type: str = "RECONCILED"
+) -> None:
+    """Append the current bank snapshot to SQLite and preserve snapshot history"""
     snapshot_date = datetime.now().strftime("%Y-%m-%d")
     df["Snapshot_Date"] = snapshot_date
     df["Snapshot_Type"] = snapshot_type
@@ -124,9 +145,10 @@ def load_to_db(df, sql_connection, table_name, snapshot_type="RECONCILED"):
     )
 
 
-def run_etl():
+def run_etl() -> None:
+    """Run extraction, transformation, loading, and SQL analysis stages"""
     conn = None
-    log_progress("Preliminaries complete. Initiating ETL process")
+    logger.info("Preliminaries complete. Initiating ETL process")
 
     try:
         df, reconciliation = extract_multi_source(
@@ -134,45 +156,42 @@ def run_etl():
             companies_market_cap_url,
             tradingview_url
         )
-        print("\nSource Reconciliation:")
-        print(reconciliation)
+        logger.info("Source Reconciliation:\n%s", reconciliation)
         validate_data(df)
         quality = data_quality_summary(df)
-        log_progress(
-            f"Data quality: {quality['records']} records, "
-            f"{quality['missing_values']} missing values, "
-            f"{quality['duplicate_names']} duplicate names, "
-            f"market cap range "
-            f"{quality['min_market_cap']} - {quality['max_market_cap']}"
+        logger.info(
+            "Data quality: %s records, %s missing values, "
+            "%s duplicate names, market cap range %s - %s",
+            quality["records"],
+            quality["missing_values"],
+            quality["duplicate_names"],
+            quality["min_market_cap"],
+            quality["max_market_cap"],
         )
-        print("\nData Quality Summary:")
-        print(quality)
-        log_progress("Data extraction and validation complete")
+        logger.info("Data Quality Summary:\n%s", quality)
+        logger.info("Data extraction and validation complete")
     except Exception as error:
-        log_progress(f"ETL extraction stage failed: {error}")
-        print(f"\nETL extraction stage failed: {error}")
+        logger.error("ETL extraction stage failed: %s", error)
         return
 
     try:
         df = transform(df, csv_path)
-        log_progress(
+        logger.info(
             "Data transformation and exchange-rate validation complete"
         )
     except Exception as error:
-        log_progress(f"ETL transformation stage failed: {error}")
-        print(f"\nETL transformation stage failed: {error}")
+        logger.error("ETL transformation stage failed: %s", error)
         return
 
     try:
         load_to_csv(df, output_csv)
-        log_progress("Data saved to CSV file")
+        logger.info("Data saved to CSV file")
         conn = sqlite3.connect(db_name)
-        log_progress("SQL Connection initiated")
+        logger.info("SQL Connection initiated")
         load_to_db(df, conn, table_name)
-        log_progress("Data loaded to Database as a table")
+        logger.info("Data loaded to Database as a table")
     except Exception as error:
-        log_progress(f"ETL load stage failed: {error}")
-        print(f"\nETL load stage failed: {error}")
+        logger.error("ETL load stage failed: %s", error)
         return
 
     try:
@@ -223,27 +242,24 @@ def run_etl():
         )
         trend = historical_trend(conn, table_name)
         if not trend.empty:
-            print("\nHistorical Trend:")
-            print(trend)
+            logger.info("Historical Trend:\n%s", trend)
 
         comparison = historical_comparison(conn, table_name)
         if not comparison.empty:
-            print("\nHistorical Comparison:")
-            print(comparison)
+            logger.info("Historical Comparison:\n%s", comparison)
         rankings, concentration, gap = advanced_sql_analysis(
             conn,
             table_name
         )
-        print("\nCurrent Rankings:")
-        print(rankings)
-        print("\nTop 5 Market-Cap Concentration:")
-        print(concentration)
-        print("\nMarket-Cap Gap:")
-        print(gap)
-        log_progress("Process Complete")
+        logger.info("Current Rankings:\n%s", rankings)
+        logger.info(
+            "Top 5 Market-Cap Concentration:\n%s",
+            concentration
+        )
+        logger.info("Market-Cap Gap:\n%s", gap)
+        logger.info("Process Complete")
     except Exception as error:
-        log_progress(f"ETL analysis stage failed: {error}")
-        print(f"\nETL analysis stage failed: {error}")
+        logger.error("ETL analysis stage failed: %s", error)
     finally:
         if conn is not None:
             conn.close()
