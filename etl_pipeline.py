@@ -1,93 +1,41 @@
-# Code for ETL operations on Largest Banks data
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-import numpy as np
-from datetime import datetime
+# ETL orchestration, validation, transformation and loading for Largest Banks data
 import sqlite3
-def log_progress(message):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open("code_log.txt", "a") as f:
-        f.write(f"{timestamp} : {message}\n")
-def extract(url, table_attribs):
-    try:
-        response = requests.get(url, timeout=20)
-        response.raise_for_status()
-    except requests.RequestException as error:
-        raise ConnectionError(f"Source request failed: {error}") from error
-    soup = BeautifulSoup(response.text, "lxml")
-    tables = soup.find_all("table", {"class": "wikitable"})
-    target_table = None
-    for table in tables:
-        headers = [
-            cell.get_text(" ", strip=True).lower()
-            for cell in table.find_all("th")
-        ]
-        header_text = " ".join(headers)
-        if "market cap" in header_text and "bank" in header_text:
-            target_table = table
-            break
-    if target_table is None:
-        raise ValueError("Required bank market-cap table not found")
-    data = []
-    for row in target_table.find_all("tr")[1:]:
-        cols = row.find_all("td")
-        if len(cols) < 3:
-            continue
-        try:
-            name = cols[1].get_text(" ", strip=True)
-            market_cap = float(
-                cols[2].get_text(" ", strip=True)
-                .replace(",", "")
-                .replace("\n", "")
-            )
-            data.append([name, market_cap])
-        except (ValueError, IndexError):
-            continue
-        if len(data) == 10:
-            break
-    if len(data) < 10:
-        raise ValueError(
-            f"Insufficient valid bank records extracted: {len(data)}"
-        )
-    df = pd.DataFrame(data, columns=table_attribs)
-    validate_data(df)
-    return df
-def extract_with_fallback(url, fallback_url, table_attribs):
-    try:
-        return extract(url, table_attribs)
-    except (ConnectionError, ValueError) as primary_error:
-        log_progress(
-            f"Primary extraction failed: {primary_error}. "
-            "Attempting fallback source"
-        )
-        try:
-            df = extract(fallback_url, table_attribs)
-            log_progress("Fallback extraction completed successfully")
-            return df
-        except (ConnectionError, ValueError) as fallback_error:
-            raise RuntimeError(
-                "Both primary and fallback data sources failed. "
-                f"Primary: {primary_error}. Fallback: {fallback_error}"
-            ) from fallback_error
-def validate_data(df):
-    required_columns = ["Name", "MC_USD_Billion"]
-    if not all(column in df.columns for column in required_columns):
-        raise ValueError("Required columns are missing")
-    if len(df) != 10:
-        raise ValueError(f"Expected 10 banks, found {len(df)}")
-    if df["Name"].isna().any() or (df["Name"].str.strip() == "").any():
-        raise ValueError("Bank names cannot be empty")
-    if df["Name"].duplicated().any():
-        raise ValueError("Duplicate bank names found")
-    if df["MC_USD_Billion"].isna().any():
-        raise ValueError("Market-cap values cannot be empty")
-    if not pd.api.types.is_numeric_dtype(df["MC_USD_Billion"]):
-        raise ValueError("Market-cap values must be numeric")
-    if not np.isfinite(df["MC_USD_Billion"]).all():
-        raise ValueError("Market-cap values must be finite")
-    if (df["MC_USD_Billion"] <= 0).any():
-        raise ValueError("Market-cap values must be positive")
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+
+from analytics import (
+    advanced_sql_analysis,
+    historical_comparison,
+    historical_trend,
+    run_query,
+)
+from extraction import (
+    extract_multi_source,
+    log_progress,
+    validate_data,
+)
+
+
+# Configuration
+url = (
+    "https://web.archive.org/web/20230908091635/"
+    "https://en.wikipedia.org/wiki/List_of_largest_banks"
+)
+companies_market_cap_url = (
+    "https://companiesmarketcap.com/banks/largest-banks-by-market-cap"
+)
+tradingview_url = (
+    "https://www.tradingview.com/markets/world-stocks/worlds-largest-banks/"
+)
+table_attribs = ["Name", "MC_USD_Billion"]
+output_csv = "./data/Largest_banks_data.csv"
+db_name = "Banks.db"
+table_name = "Largest_banks"
+csv_path = "./data/exchange_rate.csv"
+
+
 def data_quality_summary(df):
     return {
         "records": len(df),
@@ -96,6 +44,8 @@ def data_quality_summary(df):
         "min_market_cap": float(df["MC_USD_Billion"].min()),
         "max_market_cap": float(df["MC_USD_Billion"].max())
     }
+
+
 def transform(df, csv_path):
     exchange_df = pd.read_csv(csv_path)
     required_columns = {"Currency", "Rate"}
@@ -138,20 +88,32 @@ def transform(df, csv_path):
         for x in df["MC_USD_Billion"]
     ]
     return df
+
+
 def load_to_csv(df, output_path):
     df.to_csv(output_path, index=False)
-def load_to_db(df, sql_connection, table_name):
+
+
+def load_to_db(df, sql_connection, table_name, snapshot_type="RECONCILED"):
     snapshot_date = datetime.now().strftime("%Y-%m-%d")
     df["Snapshot_Date"] = snapshot_date
+    df["Snapshot_Type"] = snapshot_type
     table_exists = pd.read_sql(
         "SELECT name FROM sqlite_master WHERE type='table' "
-        f"AND name='{table_name}'",
-        sql_connection
+        f"AND name='{table_name}'", sql_connection
     )
     if not table_exists.empty:
+        columns = pd.read_sql(
+            f"PRAGMA table_info({table_name})",
+            sql_connection
+        )["name"].tolist()
+        if "Snapshot_Type" not in columns:
+            sql_connection.execute(
+                f"ALTER TABLE {table_name} "
+                "ADD COLUMN Snapshot_Type TEXT DEFAULT 'LEGACY'"
+            )
         sql_connection.execute(
-            f"DELETE FROM {table_name} "
-            "WHERE Snapshot_Date = ?",
+            f"DELETE FROM {table_name} WHERE Snapshot_Date = ?",
             (snapshot_date,)
         )
     df.to_sql(
@@ -160,113 +122,20 @@ def load_to_db(df, sql_connection, table_name):
         if_exists="append" if not table_exists.empty else "replace",
         index=False
     )
-def run_query(query_statement, sql_connection):
-    print(f"\nQuery: {query_statement}")
-    result = pd.read_sql(query_statement, sql_connection)
-    print(result)
-def historical_comparison(sql_connection, table_name):
-    dates = pd.read_sql(
-        f"""
-        SELECT DISTINCT Snapshot_Date
-        FROM {table_name}
-        ORDER BY Snapshot_Date DESC
-        LIMIT 2
-        """,
-        sql_connection
-    )
-    if len(dates) < 2:
-        print("\nHistorical comparison requires at least two snapshots.")
-        return pd.DataFrame()
-    latest = dates.iloc[0]["Snapshot_Date"]
-    previous = dates.iloc[1]["Snapshot_Date"]
-    query = f"""
-        WITH ranked AS (
-            SELECT Snapshot_Date, Name, MC_USD_Billion,
-            RANK() OVER (
-                PARTITION BY Snapshot_Date
-                ORDER BY MC_USD_Billion DESC
-            ) AS Rank
-            FROM {table_name}
-            WHERE Snapshot_Date IN (?, ?)
-        )
-        SELECT
-            previous.Name,
-            previous.Rank AS Previous_Rank,
-            current.Rank AS Current_Rank,
-            previous.Rank - current.Rank AS Rank_Change,
-            previous.MC_USD_Billion AS Previous_MC,
-            current.MC_USD_Billion AS Current_MC,
-            ROUND(
-                (current.MC_USD_Billion - previous.MC_USD_Billion)
-                * 100.0 / previous.MC_USD_Billion, 2
-            ) AS MC_Change_Percent
-        FROM ranked previous
-        JOIN ranked current
-            ON previous.Name = current.Name
-        WHERE previous.Snapshot_Date = ?
-        AND current.Snapshot_Date = ?
-        ORDER BY current.Rank
-    """
-    return pd.read_sql(
-        query,
-        sql_connection,
-        params=[latest, previous, previous, latest]
-    )
-def advanced_sql_analysis(sql_connection, table_name):
-    latest = f"(SELECT MAX(Snapshot_Date) FROM {table_name})"
-    rankings = pd.read_sql(
-        f"""SELECT Name, MC_USD_Billion,
-        RANK() OVER (ORDER BY MC_USD_Billion DESC) AS Current_Rank
-        FROM {table_name}
-        WHERE Snapshot_Date = {latest}
-        ORDER BY Current_Rank""",
-        sql_connection
-    )
-    concentration = pd.read_sql(
-        f"""SELECT ROUND(
-        100.0 * SUM(
-            CASE WHEN Current_Rank <= 5
-            THEN MC_USD_Billion ELSE 0 END
-        ) / SUM(MC_USD_Billion), 2)
-        AS Top_5_Market_Cap_Percent
-        FROM (
-            SELECT MC_USD_Billion,
-            RANK() OVER (
-                ORDER BY MC_USD_Billion DESC
-            ) AS Current_Rank
-            FROM {table_name}
-            WHERE Snapshot_Date = {latest}
-        )""",
-        sql_connection
-    )
-    gap = pd.read_sql(
-        f"""SELECT ROUND(
-        MAX(MC_USD_Billion) - MIN(MC_USD_Billion), 2)
-        AS Market_Cap_Gap
-        FROM {table_name}
-        WHERE Snapshot_Date = {latest}""",
-        sql_connection
-    )
-    return rankings, concentration, gap
-# Configuration
-url = (
-    "https://web.archive.org/web/20230908091635/"
-    "https://en.wikipedia.org/wiki/List_of_largest_banks"
-)
-fallback_url = "https://en.wikipedia.org/wiki/List_of_largest_banks"
-table_attribs = ["Name", "MC_USD_Billion"]
-output_csv = "./data/Largest_banks_data.csv"
-db_name = "Banks.db"
-table_name = "Largest_banks"
-csv_path = "./data/exchange_rate.csv"
-# ETL Process
+
+
 def run_etl():
     conn = None
     try:
         log_progress("Preliminaries complete. Initiating ETL process")
-        df = extract_with_fallback(
-            url, fallback_url, table_attribs
+        df, reconciliation = extract_multi_source(
+            url,
+            companies_market_cap_url,
+            tradingview_url
         )
+        print("\nSource Reconciliation:")
+        print(reconciliation)
+        validate_data(df)
         quality = data_quality_summary(df)
         log_progress(
             f"Data quality: {quality['records']} records, "
@@ -333,12 +202,18 @@ def run_etl():
             """,
             conn
         )
+        trend = historical_trend(conn, table_name)
+        if not trend.empty:
+            print("\nHistorical Trend:")
+            print(trend)
+
         comparison = historical_comparison(conn, table_name)
         if not comparison.empty:
             print("\nHistorical Comparison:")
             print(comparison)
         rankings, concentration, gap = advanced_sql_analysis(
-            conn, table_name
+            conn,
+            table_name
         )
         print("\nCurrent Rankings:")
         print(rankings)
@@ -353,5 +228,7 @@ def run_etl():
     finally:
         if conn is not None:
             conn.close()
+
+
 if __name__ == "__main__":
     run_etl()
