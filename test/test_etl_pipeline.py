@@ -287,3 +287,110 @@ def test_run_etl_reports_analysis_stage_failure(
         "ETL analysis stage failed" in record.message
         for record in caplog.records
     )
+
+
+def test_run_etl_success_path(monkeypatch, tmp_path, caplog):
+    extracted = valid_data()
+
+    monkeypatch.setattr(
+        etl_pipeline,
+        "extract_multi_source",
+        lambda *args, **kwargs: (extracted.copy(), pd.DataFrame())
+    )
+
+    monkeypatch.setattr(
+        etl_pipeline,
+        "csv_path",
+        str(exchange_file(tmp_path))
+    )
+
+    monkeypatch.setattr(
+        etl_pipeline,
+        "load_to_csv",
+        lambda *args, **kwargs: None
+    )
+
+    database_path = tmp_path / "Banks.db"
+
+    monkeypatch.setattr(
+        etl_pipeline,
+        "db_name",
+        str(database_path)
+    )
+
+    with caplog.at_level(logging.INFO):
+        etl_pipeline.run_etl()
+
+    assert "Process Complete" in caplog.text
+
+    connection = sqlite3.connect(database_path)
+
+    result = pd.read_sql(
+        "SELECT * FROM Largest_banks",
+        connection
+    )
+
+    assert len(result) == len(extracted)
+    assert set(result["Name"]) == set(extracted["Name"])
+    assert result["Snapshot_Type"].eq("RECONCILED").all()
+
+    connection.close()
+
+
+def test_load_to_db_migrates_legacy_schema():
+    connection = sqlite3.connect(":memory:")
+
+    connection.execute(
+        """
+        CREATE TABLE Banks (
+            Name TEXT,
+            MC_USD_Billion REAL,
+            Snapshot_Date TEXT
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        INSERT INTO Banks (
+            Name,
+            MC_USD_Billion,
+            Snapshot_Date
+        )
+        VALUES ('Legacy Bank', 500, '2026-09-28')
+        """
+    )
+
+    connection.commit()
+
+    load_to_db(
+        valid_data(),
+        connection,
+        "Banks"
+    )
+
+    columns = pd.read_sql(
+        "PRAGMA table_info(Banks)",
+        connection
+    )["name"].tolist()
+
+    assert "Snapshot_Type" in columns
+
+    result = pd.read_sql(
+        """
+        SELECT Name, Snapshot_Type
+        FROM Banks
+        """,
+        connection
+    )
+
+    legacy_row = result[result["Name"] == "Legacy Bank"].iloc[0]
+
+    assert legacy_row["Snapshot_Type"] == "LEGACY"
+
+    current_rows = result[result["Name"] != "Legacy Bank"]
+
+    assert len(current_rows) == 10
+    assert current_rows["Snapshot_Type"].eq("RECONCILED").all()
+
+    connection.close()

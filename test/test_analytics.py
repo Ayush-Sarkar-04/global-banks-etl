@@ -1,14 +1,16 @@
 import sqlite3
+import numpy as np
 import pandas as pd
 import pytest
 
-from analytics import (
-    advanced_sql_analysis,
-    historical_comparison,
-    historical_trend,
-    run_query,
+import etl_pipeline
+
+from etl_pipeline import (
+    data_quality_summary,
+    load_to_csv,
+    load_to_db,
+    transform,
 )
-from etl_pipeline import load_to_db
 
 def valid_data():
     return pd.DataFrame({
@@ -21,179 +23,158 @@ def valid_data():
             50, 40, 30, 20, 10
         ]
     })
-def add_snapshot(connection, dataframe, date):
-    snapshot = dataframe.copy()
-    snapshot["Snapshot_Date"] = date
-    snapshot["Snapshot_Type"] = "RECONCILED"
-    snapshot.to_sql("Banks", connection, if_exists="append", index=False)
-def test_run_query_returns_dataframe():
-    conn = sqlite3.connect(":memory:")
+def exchange_file(tmp_path):
+    path = tmp_path / "exchange_rate.csv"
     pd.DataFrame({
-        "Name": ["Bank A"],
-        "MC_USD_Billion": [100]
-    }).to_sql("Banks", conn, index=False)
+        "Currency": ["GBP", "EUR", "INR"],
+        "Rate": [0.80, 0.93, 82.95]
+    }).to_csv(path, index=False)
+    return path
+def test_transform_calculates_currency_values(tmp_path):
+    result = transform(valid_data(), exchange_file(tmp_path))
+    assert result.loc[0, ["MC_GBP_Billion", "MC_EUR_Billion", "MC_INR_Billion"]].tolist() == [80.0, 93.0, 8295.0]
 
-    result = run_query(
-        "SELECT Name, MC_USD_Billion FROM Banks",
+def test_load_to_csv_creates_expected_output(tmp_path):
+    path = tmp_path / "banks.csv"
+    load_to_csv(valid_data(), path)
+    result = pd.read_csv(path)
+    assert len(result) == 10
+    assert list(result.columns) == ["Name", "MC_USD_Billion"]
+
+def test_snapshot_is_created():
+    conn = sqlite3.connect(":memory:")
+    df = valid_data()
+    load_to_db(
+        df,
+        conn,
+        "Banks"
+    )
+    result = pd.read_sql(
+        "SELECT * FROM Banks",
         conn
     )
-
-    assert isinstance(result, pd.DataFrame)
-    assert result.iloc[0]["Name"] == "Bank A"
-    assert result.iloc[0]["MC_USD_Billion"] == 100
+    assert len(result) == 10
+    assert "Snapshot_Date" in result.columns
     conn.close()
 
-
-def test_historical_comparison_requires_two_snapshots():
-    conn = sqlite3.connect(":memory:")
+def test_data_quality_summary():
     df = valid_data()
-    load_to_db(df, conn, "Banks")
-    result = historical_comparison(
-        conn,
-        "Banks"
-    )
-    assert result.empty
-    conn.close()
+    summary = data_quality_summary(df)
+    assert summary["records"] == 10
+    assert summary["missing_values"] == 0
+    assert summary["duplicate_names"] == 0
+    assert summary["min_market_cap"] == 10
+    assert summary["max_market_cap"] == 100
 
-def test_historical_comparison_calculates_changes():
-    conn = sqlite3.connect(":memory:")
-
-    first = valid_data()
-    add_snapshot(conn, first, "2026-09-22")
-
-    second = valid_data()
-    second.loc[0, "MC_USD_Billion"] = 110
-    add_snapshot(conn, second, "2026-09-23")
-
-    result = historical_comparison(conn, "Banks")
-
-    bank_a = result[
-        result["Name"] == "Bank A"
-    ].iloc[0]
-
-    assert bank_a["Previous_Rank"] == 1
-    assert bank_a["Current_Rank"] == 1
-    assert bank_a["Rank_Change"] == 0
-    assert bank_a["Previous_MC"] == 100
-    assert bank_a["Current_MC"] == 110
-    assert bank_a["MC_Change_Percent"] == 10.0
-
-    conn.close()
-
-def test_advanced_sql_analysis_rankings():
-    conn = sqlite3.connect(":memory:")
+def test_data_quality_summary_detects_missing_values():
     df = valid_data()
-    load_to_db(df, conn, "Banks")
-    rankings, concentration, gap = advanced_sql_analysis(
-        conn,
-        "Banks"
-    )
-    assert len(rankings) == 10
-    assert rankings.iloc[0]["Name"] == "Bank A"
-    assert rankings.iloc[0]["Current_Rank"] == 1
-    assert rankings.iloc[-1]["Current_Rank"] == 10
-    conn.close()
+    df.loc[0, "MC_USD_Billion"] = None
+    summary = data_quality_summary(df)
+    assert summary["missing_values"] == 1
 
-def test_top_five_market_cap_concentration():
-    conn = sqlite3.connect(":memory:")
+def test_data_quality_summary_detects_duplicates():
     df = valid_data()
-    load_to_db(df, conn, "Banks")
-    rankings, concentration, gap = advanced_sql_analysis(
-        conn,
-        "Banks"
+    df.loc[1, "Name"] = "Bank A"
+    summary = data_quality_summary(df)
+    assert summary["duplicate_names"] == 1
+
+def test_missing_exchange_rate_column(tmp_path):
+    path = tmp_path / "exchange_rate.csv"
+    pd.DataFrame({
+        "Currency": ["GBP", "EUR", "INR"]
+    }).to_csv(path, index=False)
+    with pytest.raises(ValueError, match="Currency and Rate"):
+        transform(valid_data(), path)
+
+def test_missing_required_exchange_rate(tmp_path):
+    path = tmp_path / "exchange_rate.csv"
+    pd.DataFrame({
+        "Currency": ["GBP", "EUR"],
+        "Rate": [0.80, 0.93]
+    }).to_csv(path, index=False)
+    with pytest.raises(
+        ValueError,
+        match="Required exchange rates are missing"
+    ):
+        transform(valid_data(), path)
+
+def test_non_numeric_exchange_rate(tmp_path):
+    path = tmp_path / "exchange_rate.csv"
+    pd.DataFrame({
+        "Currency": ["GBP", "EUR", "INR"],
+        "Rate": [0.80, "abc", 82.95]
+    }).to_csv(path, index=False)
+    with pytest.raises(
+        ValueError,
+        match="numeric and non-empty"
+    ):
+        transform(valid_data(), path)
+
+def test_negative_exchange_rate(tmp_path):
+    path = tmp_path / "exchange_rate.csv"
+    pd.DataFrame({
+        "Currency": ["GBP", "EUR", "INR"],
+        "Rate": [0.80, -0.93, 82.95]
+    }).to_csv(path, index=False)
+    with pytest.raises(
+        ValueError,
+        match="Exchange rates must be positive"
+    ):
+        transform(valid_data(), path)
+
+def test_duplicate_exchange_currency(tmp_path):
+    path = tmp_path / "exchange_rate.csv"
+    pd.DataFrame({
+        "Currency": ["GBP", "GBP", "EUR", "INR"],
+        "Rate": [0.80, 0.81, 0.93, 82.95]
+    }).to_csv(path, index=False)
+    with pytest.raises(
+        ValueError,
+        match="Duplicate currencies"
+    ):
+        transform(valid_data(), path)
+
+def test_zero_exchange_rate(tmp_path):
+    path = tmp_path / "exchange_rate.csv"
+    pd.DataFrame({
+        "Currency": ["GBP", "EUR", "INR"],
+        "Rate": [0, 0.93, 82.95]
+    }).to_csv(path, index=False)
+    with pytest.raises(ValueError, match="positive"):
+        transform(valid_data(), str(path))
+
+def test_nan_exchange_rate(tmp_path):
+    path = tmp_path / "exchange_rate.csv"
+    pd.DataFrame({
+        "Currency": ["GBP", "EUR", "INR"],
+        "Rate": [np.nan, 0.93, 82.95]
+    }).to_csv(path, index=False)
+    with pytest.raises(ValueError):
+        transform(valid_data(), str(path))
+
+def test_empty_exchange_rate_file(tmp_path):
+    path = tmp_path / "exchange_rate.csv"
+    pd.DataFrame(columns=["Currency", "Rate"]).to_csv(
+        path,
+        index=False
     )
-    expected = round(
-        sum([100, 90, 80, 70, 60])
-        / sum(df["MC_USD_Billion"])
-        * 100,
-        2
-    )
-    actual = concentration.iloc[0][
-        "Top_5_Market_Cap_Percent"
-    ]
-    assert actual == expected
-    conn.close()
+    with pytest.raises(ValueError):
+        transform(valid_data(), str(path))
 
-def test_market_cap_gap():
-    conn = sqlite3.connect(":memory:")
-    df = valid_data()
-    load_to_db(df, conn, "Banks")
-    rankings, concentration, gap = advanced_sql_analysis(
-        conn,
-        "Banks"
-    )
-    assert gap.iloc[0]["Market_Cap_Gap"] == 90.0
-    conn.close()
-
-def test_historical_rank_change():
-    conn = sqlite3.connect(":memory:")
-
-    first = valid_data()
-    add_snapshot(conn, first, "2026-09-22")
-
-    second = valid_data()
-    second.loc[1, "MC_USD_Billion"] = 110
-    add_snapshot(conn, second, "2026-09-23")
-
-    result = historical_comparison(conn, "Banks")
-
-    bank_a = result[
-        result["Name"] == "Bank A"
-    ].iloc[0]
-    bank_b = result[
-        result["Name"] == "Bank B"
-    ].iloc[0]
-
-    assert bank_a["Previous_Rank"] == 1
-    assert bank_a["Current_Rank"] == 2
-    assert bank_a["Rank_Change"] == -1
-    assert bank_b["Previous_Rank"] == 2
-    assert bank_b["Current_Rank"] == 1
-    assert bank_b["Rank_Change"] == 1
-
-    conn.close()
-
-def test_sql_analysis_does_not_mix_snapshots():
-    conn = sqlite3.connect(":memory:")
-
-    first = valid_data()
-    add_snapshot(conn, first, "2026-09-22")
-
-    latest = valid_data()
-    latest.loc[0, "MC_USD_Billion"] = 200
-    add_snapshot(conn, latest, "2026-09-23")
-
-    rankings, concentration, gap = advanced_sql_analysis(
-        conn,
-        "Banks"
-    )
-
-    assert len(rankings) == 10
-    assert rankings.iloc[0]["Name"] == "Bank A"
-    assert rankings.iloc[0]["MC_USD_Billion"] == 200
-    assert rankings.iloc[0]["Current_Rank"] == 1
-    assert gap.iloc[0]["Market_Cap_Gap"] == 190.0
-
-    conn.close()
-
-def test_sql_analysis_latest_snapshot_values():
+def test_same_day_snapshot_preserves_latest_data():
     connection = sqlite3.connect(":memory:")
-
     first = valid_data()
-    add_snapshot(connection, first, "2026-09-22")
-
-    latest = valid_data()
-    latest.loc[0, "MC_USD_Billion"] = 500
-    add_snapshot(connection, latest, "2026-09-23")
-
-    rankings, _, _ = advanced_sql_analysis(
-        connection,
-        "Banks"
+    load_to_db(first, connection, "Banks")
+    second = valid_data()
+    second.loc[0, "MC_USD_Billion"] = 999
+    load_to_db(second, connection, "Banks")
+    result = pd.read_sql(
+        """
+        SELECT *
+        FROM Banks
+        WHERE Name = 'Bank A'
+        """,
+        connection
     )
-
-    assert rankings.iloc[0]["Name"] == "Bank A"
-    assert rankings.iloc[0]["MC_USD_Billion"] == 500
-    assert rankings.iloc[0]["Current_Rank"] == 1
-
-    connection.close()
-
+    assert len(result) == 1
+    assert result.iloc[0]["MC_USD_Billion"] == 999

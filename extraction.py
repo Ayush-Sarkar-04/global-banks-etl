@@ -1,19 +1,13 @@
 # Extraction and source reconciliation for Largest Banks data
 import logging
 import re
-
 import numpy as np
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-
-
 logger = logging.getLogger(__name__)
-
 DEFAULT_FALLBACK_URL = "https://en.wikipedia.org/wiki/List_of_largest_banks"
 DEFAULT_TABLE_ATTRIBS = ["Name", "MC_USD_Billion"]
-
-
 BANK_ALIASES = {
     "jpmorgan chase": "JPMorgan Chase",
     "jp morgan chase": "JPMorgan Chase",
@@ -35,8 +29,6 @@ BANK_ALIASES = {
     "mizuho financial": "Mizuho Financial",
     "bnp paribas": "BNP Paribas",
 }
-
-
 def validate_data(df):
     required_columns = ["Name", "MC_USD_Billion"]
     if not all(column in df.columns for column in required_columns):
@@ -55,8 +47,6 @@ def validate_data(df):
         raise ValueError("Market-cap values must be finite")
     if (df["MC_USD_Billion"] <= 0).any():
         raise ValueError("Market-cap values must be positive")
-
-
 def extract(url, table_attribs):
     try:
         response = requests.get(url, timeout=20)
@@ -101,8 +91,6 @@ def extract(url, table_attribs):
     df = pd.DataFrame(data, columns=table_attribs)
     validate_data(df)
     return df
-
-
 def extract_with_fallback(url, fallback_url, table_attribs):
     try:
         return extract(url, table_attribs)
@@ -120,8 +108,6 @@ def extract_with_fallback(url, fallback_url, table_attribs):
                 "Both primary and fallback data sources failed. "
                 f"Primary: {primary_error}. Fallback: {fallback_error}"
             ) from fallback_error
-
-
 def normalize_bank_name(name):
     text = name.lower().replace("&", " and ")
     text = re.sub(r"[^a-z0-9 ]", " ", text)
@@ -130,8 +116,6 @@ def normalize_bank_name(name):
         if alias in text:
             return BANK_ALIASES[alias]
     return name.strip()
-
-
 def parse_market_cap(value):
     match = re.search(
         r"\$?\s*([\d,.]+)\s*(T|B|M)\b(?:\s*USD)?",
@@ -144,8 +128,6 @@ def parse_market_cap(value):
         "B": 1,
         "M": 0.001
     }[match.group(2)]
-
-
 def extract_ranked_source(url, source_name):
     try:
         response = requests.get(url, timeout=20)
@@ -182,8 +164,6 @@ def extract_ranked_source(url, source_name):
             f"{source_name} returned fewer than 8 recognized banks"
         )
     return df
-
-
 def reconcile_sources(source_frames, reference_frames=None):
     merged = pd.concat(
         [
@@ -262,8 +242,6 @@ def reconcile_sources(source_frames, reference_frames=None):
     )
     validate_data(result)
     return result, merged.reset_index()
-
-
 def extract_multi_source(wikipedia_url, companies_url, tradingview_url):
     current_urls = {
         "CompaniesMarketCap": companies_url,
